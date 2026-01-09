@@ -30,10 +30,10 @@ btc_train = btc[btc["day"].isin(train_days)].reset_index(drop=True)
 btc_test  = btc[btc["day"].isin(test_days)].reset_index(drop=True)
 
 # Save to current directory
-btc_train.to_csv("./btc_train.csv", index=False)
-btc_test.to_csv("./btc_test.csv", index=False)
-tweet_train.to_csv("./tweet_train.csv", index=False)
-tweet_test.to_csv("./tweet_test.csv", index=False)
+btc_train.to_csv("./data/btc_train.csv", index=False)
+btc_test.to_csv("./data/btc_test.csv", index=False)
+tweet_train.to_csv("./data/tweet_train.csv", index=False)
+tweet_test.to_csv("./data/tweet_test.csv", index=False)
 
 
 # Sanity check
