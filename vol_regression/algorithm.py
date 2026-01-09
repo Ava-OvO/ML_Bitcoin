@@ -48,22 +48,22 @@ class PolynomialVolatilityPredictor:
         if self.df is None:
             raise ValueError("Data not loaded. Please load data before preprocessing.")
         
-        required_cols = {"open", "high", "low", "close"}
+        required_cols = {"Open", "High", "Low", "Close"}
         missing = required_cols - set(self.df.columns)
         if missing:
             raise ValueError(f"Missing required columns in CSV: {sorted(missing)}")
 
         # 计算波动率: (high - low) / close
-        self.df['volatility'] = (self.df['high'] - self.df['low']) / self.df['close']
+        self.df['volatility'] = (self.df['High'] - self.df['Low']) / self.df['Close']
         
         # 计算方向: 如果收盘价 > 开盘价，则为1，否则为0
-        self.df['direction'] = (self.df['close'] > self.df['open']).astype(int)
+        self.df['direction'] = (self.df['Close'] > self.df['Open']).astype(int)
         
         # Make sure data is ordered by time if a date column exists
-        if "date" in self.df.columns:
+        if "Date" in self.df.columns:
             try:
-                self.df["date"] = pd.to_datetime(self.df["date"])
-                self.df = self.df.sort_values("date").reset_index(drop=True)
+                self.df["Date"] = pd.to_datetime(self.df["Date"])
+                self.df = self.df.sort_values("Date").reset_index(drop=True)
             except Exception:
                 self.df = self.df.reset_index(drop=True)
         else:
@@ -118,7 +118,7 @@ class PolynomialVolatilityPredictor:
             # assume list of dicts / records
             dfw = pd.DataFrame(recent_ohlc)
 
-        required = {"high", "low", "close"}
+        required = {"High", "Low", "Close"}
         missing = required - set(dfw.columns)
         if missing:
             raise ValueError(f"predict() input missing columns: {sorted(missing)}")
@@ -128,9 +128,9 @@ class PolynomialVolatilityPredictor:
                 f"Expected recent_ohlc window length {self.window_size}, got {len(dfw)}"
             )
 
-        high = dfw["high"].to_numpy(dtype=float)
-        low = dfw["low"].to_numpy(dtype=float)
-        close = dfw["close"].to_numpy(dtype=float)
+        high = dfw["High"].to_numpy(dtype=float)
+        low = dfw["Low"].to_numpy(dtype=float)
+        close = dfw["Close"].to_numpy(dtype=float)
 
         # avoid division-by-zero
         if np.any(close == 0):
@@ -166,4 +166,87 @@ class PolynomialVolatilityPredictor:
         """
         if self.df is None:
             raise ValueError("数据未加载，请先调用 load_data()。")
-        return self.df[['date', 'volatility', 'direction']]
+        return self.df[['Date', 'volatility', 'direction']]
+
+
+class PolynomialMultiModalVolatilityPredictor:
+    def __init__(self, degree=4, window_size=30, forecast_window=7):
+        self.degree = int(degree)
+        self.window_size = int(window_size)
+        self.forecast_window = int(forecast_window)
+
+        self.poly = PolynomialFeatures(degree=self.degree, include_bias=False)
+        self.model = LinearRegression()
+
+        self.df_daily = None
+        self._trained = False
+
+        self.tweet_cols = [
+            "sentiment_mean_t",
+            "sentiment_std_t",
+            "tweet_count_t",
+            "positive_ratio_t",
+            "negative_ratio_t",
+        ]
+
+    def load_daily_table(self, df_daily: pd.DataFrame):
+        required = {"Date", "volatility", *self.tweet_cols}
+        missing = required - set(df_daily.columns)
+        if missing:
+            raise ValueError(f"daily table missing columns: {sorted(missing)}")
+
+        df = df_daily.copy()
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
+
+        # ensure numeric
+        df["volatility"] = pd.to_numeric(df["volatility"], errors="coerce")
+        df = df.dropna(subset=["volatility"])
+        for c in self.tweet_cols:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+
+        self.df_daily = df
+
+    def _build_xy(self):
+        W, H = self.window_size, self.forecast_window
+        vol = self.df_daily["volatility"].to_numpy(float)                 # (T,)
+        tw  = self.df_daily[self.tweet_cols].to_numpy(float)              # (T,5)
+
+        T = len(vol)
+        n = T - W - H + 1
+        if n <= 0:
+            raise ValueError(f"Not enough data: need at least W+H={W+H}, got {T}")
+
+        X = np.zeros((n, W * 6), dtype=float)  # 6 dims/day
+        Y = np.zeros((n, H), dtype=float)
+
+        for i in range(n):
+            vol_win = vol[i:i+W].reshape(W, 1)      # (W,1)
+            tw_win  = tw[i:i+W]                     # (W,5)
+            day_win = np.concatenate([vol_win, tw_win], axis=1)  # (W,6)
+            X[i] = day_win.reshape(-1)
+            Y[i] = vol[i+W:i+W+H]
+
+        return X, Y
+
+    def train(self):
+        X, Y = self._build_xy()
+        Xp = self.poly.fit_transform(X)
+        self.model.fit(Xp, Y)     # multi-output
+        self._trained = True
+
+    def predict(self, recent_daily_window: pd.DataFrame) -> np.ndarray:
+        if not self._trained:
+            raise ValueError("Model not trained. Call train() first.")
+        if len(recent_daily_window) != self.window_size:
+            raise ValueError(f"Expected window length {self.window_size}, got {len(recent_daily_window)}")
+
+        cols = ["volatility"] + self.tweet_cols
+        missing = set(cols) - set(recent_daily_window.columns)
+        if missing:
+            raise ValueError(f"predict window missing columns: {sorted(missing)}")
+
+        x = recent_daily_window[cols].to_numpy(float).reshape(1, -1)  # (1, W*6)
+        xp = self.poly.transform(x)
+        y = self.model.predict(xp)  # (1, H)
+        return y.reshape(-1)

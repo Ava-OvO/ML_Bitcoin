@@ -1,38 +1,40 @@
-from algorithm import PolynomialVolatilityPredictor
+from algorithm import PolynomialVolatilityPredictor, PolynomialMultiModalVolatilityPredictor
 import pandas as pd
 import numpy as np
 import argparse
 import matplotlib.pyplot as plt
+from advance_input import build_daily_btc_vol, build_daily_tweet_features, build_daily_multimodal_table
 
 def baseline_pred(window_size, forecast_window, predictor, test_data_path = None):
     if test_data_path:
         test_df = pd.read_csv(test_data_path)
-        if "data" in test_df.columns:
-            test_df['data'] = pd.to_datetime(test_df['data'])
-            test_df = test_df.sort_values("data").reset_index(drop=True)
+        if "Date" in test_df.columns:
+            test_df['Date'] = pd.to_datetime(test_df['Date'])
+            test_df = test_df.sort_values("Date").reset_index(drop=True)
         else:
             test_df = test_df.reset_index(drop=True)
 
-        needed_cols = {"high", "low", "close"}
+        needed_cols = {"High", "Low", "Close"}
         if not needed_cols.issubset(set(test_df.columns)):
             raise ValueError(f"Test data must contain columns: {needed_cols}")
         
         if len(test_df) < (window_size + forecast_window):
             raise ValueError(f"Test data must have at least {window_size + forecast_window} rows.")
         
-        future_true_window = test_df.iloc[window_size:window_size + forecast_window][["high", "low", "close"]]
-        true_vol = (future_true_window["high"] - future_true_window["low"]) / future_true_window["close"]
+        future_true_window = test_df.iloc[window_size:window_size + forecast_window][["High", "Low", "Close"]]
+        true_vol = (future_true_window["High"] - future_true_window["Low"]) / future_true_window["Close"]
         true_vol = true_vol.to_numpy(dtype=float)
 
-        Input = test_df.iloc[0:window_size][["high", "low", "close"]]
+        Input = test_df.iloc[0:window_size][["High", "Low", "Close"]]
         future_pred = predictor.predict(Input)
         
         err = future_pred - true_vol
         mae = float(np.mean(np.abs(err)))
         rmse = float(np.sqrt(np.mean(err ** 2)))
 
-        print("\nGround-truth volatility (from test set first forecast window):")
-        print(true_vol)
+        print("Baseline Model Prediction Results:")
+        print("Pred:", future_pred)
+        print("True:", true_vol)
         print(f"\nMAE={mae:.6f}, RMSE={rmse:.6f}")
 
         x = np.arange(1, forecast_window + 1)
@@ -44,8 +46,11 @@ def baseline_pred(window_size, forecast_window, predictor, test_data_path = None
         plt.title("Volatility Prediction vs True Values")
         plt.legend()
         plt.tight_layout()
-        plt.savefig("volatility_prediction_vs_true.png")
-        plt.show()
+        plt.savefig("./vol_regression/baseline_volatility_prediction_vs_true.png")
+        # plt.show()
+
+        print("Baseline true days:", test_df.iloc[window_size:window_size+forecast_window]["Date"].tolist())
+
 
 
 def baseline(poly_degree=4, 
@@ -71,38 +76,114 @@ def baseline(poly_degree=4,
         # 4. 获取处理后的数据（包含volatility和direction）
         processed_data = predictor.get_processed_data()
         # print("处理后的数据 (前5行):")
-        print("Processed data (first 5 rows):")
-        print(processed_data.head())
+        # print("Processed data (first 5 rows):")
+        # print(processed_data.head())
         
         # 5. 预测未来的波动率
         baseline_pred(window_size, forcast_window, predictor, test_data_path=test_data_path)
 
     except FileNotFoundError:
         # print("错误: toy_btc_ohlcv.csv 文件未找到。请检查路径是否正确。")
-        print("Error: toy_btc_ohlcv.csv file not found. Please check if the path is correct.")
-    except Exception as e:
-        # print(f"发生错误: {e}")
-        print(f"An error occurred: {e}")
+        print(f"Error: {train_data_path} file not found. Please check if the path is correct.")
+    # except Exception as e:
+    #     # print(f"发生错误: {e}")
+    #     print(f"An error occurred: {e}")
+
+def advanced_pred(window_size, forecast_window, model, daily_test):
+    if len(daily_test) < (window_size + forecast_window):
+        raise ValueError(f"Test data must have at least {window_size + forecast_window} rows.")
+    
+    recent_window = daily_test.iloc[:window_size]
+    pred = model.predict(recent_window)
+
+    true_future = daily_test.iloc[window_size:window_size + forecast_window]["volatility"].to_numpy(dtype=float)
+    err = pred - true_future
+    mae = float(np.mean(np.abs(err)))
+    rmse = float(np.sqrt(np.mean(err ** 2)))
+
+    print("Advanced Model Prediction Results:")
+    print("Pred:", pred)
+    print("True:", true_future)
+    print(f"MAE={mae:.6f}, RMSE={rmse:.6f}")
+
+    # plot
+    x = np.arange(1, forecast_window + 1)
+    plt.figure()
+    plt.plot(x, true_future, label = "true", marker='o')
+    plt.plot(x, pred, label = "pred", marker='x')
+    plt.xlabel("Days into the future")
+    plt.ylabel("Volatility")
+    plt.title("Advanced Poly: Volatility Prediction vs Ground Truth")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("./vol_regression/advanced_poly_vol_prediction_vs_true.png")
+    # plt.show()
+
+    print("Advanced true days:", daily_test.iloc[window_size:window_size+forecast_window]["Date"].tolist())
+
+
+def advanced(poly_degree=4, 
+             train_btc_data_path = None,
+             test_btc_data_path = None,
+             train_tweet_data_path = None,
+             test_tweet_data_path = None,
+             window_size = 30,
+             forcast_window = 7
+             ):
+    # load data
+    btc_trian = pd.read_csv(train_btc_data_path)
+    btc_test = pd.read_csv(test_btc_data_path)
+    tweet_train = pd.read_csv(train_tweet_data_path)
+    tweet_test = pd.read_csv(test_tweet_data_path)
+
+    # build daily features
+    btc_daily_train = build_daily_btc_vol(btc_trian, date_col="Date")
+    btc_daily_test = build_daily_btc_vol(btc_test, date_col="Date")
+    tw_daily_train = build_daily_tweet_features(tweet_train, date_col="date", score_col="sentiment_score")
+    tw_daily_test = build_daily_tweet_features(tweet_test, date_col="date", score_col="sentiment_score")
+    daily_train = build_daily_multimodal_table(btc_daily_train, tw_daily_train)
+    daily_test = build_daily_multimodal_table(btc_daily_test, tw_daily_test)
+
+    # train the model
+    model = PolynomialMultiModalVolatilityPredictor(
+        degree=poly_degree,
+        window_size=window_size,
+        forecast_window=forcast_window,
+    )
+    model.load_daily_table(daily_train)
+    model.train()
+
+    print("hello")
+    # evaluate
+    advanced_pred(window_size, forcast_window, model, daily_test)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Polynomial Volatility Predictor")
-    parser.add_argument("--poly_degree", type=int, default=4, help="Degree of the polynomial")
-    parser.add_argument("--train_data_path", type=str, default=r"data\toy_btc_ohlcv.csv", help="Path to the training data file")
-    parser.add_argument("--test_data_path", type=str, default=r"data\toy_btc_ohlcv.csv", help="Path to the testing data file")
+    parser.add_argument("--poly_degree", type=int, default=2, help="Degree of the polynomial")
+    parser.add_argument("--train_btc_data_path", type=str, default=r"data\btc_train.csv", help="Path to the training data file")
+    parser.add_argument("--test_btc_data_path", type=str, default=r"data\btc_test.csv", help="Path to the testing data file")
+    parser.add_argument("--train_tweet_data_path", type=str, default=r"data\tweet_train.csv", help="Path to the training tweet data file")
+    parser.add_argument("--test_tweet_data_path", type=str, default=r"data\tweet_test.csv", help="Path to the testing tweet data file")
     parser.add_argument("--model", type = str, default = "baseline", help = "Model to use: baseline or advanced")
-    parser.add_argument("--window_size", type = int, default = 30, help = "Window size for training")
+    parser.add_argument("--window_size", type = int, default = 40, help = "Window size for training")
     parser.add_argument("--forcast_window", type = int, default = 7, help = "Forecast window size")
 
     args = parser.parse_args()
 
     if args.model == "baseline":
         baseline(poly_degree=args.poly_degree,
-             train_data_path=args.train_data_path,
-             test_data_path=args.test_data_path,
+             train_data_path=args.train_btc_data_path,
+             test_data_path=args.test_btc_data_path,
              window_size=args.window_size,
              forcast_window=args.forcast_window)
     elif args.model == "advanced":
-        # todo
-        pass
+        advanced(poly_degree=args.poly_degree,
+             train_btc_data_path=args.train_btc_data_path,
+             test_btc_data_path=args.test_btc_data_path,
+             train_tweet_data_path=args.train_tweet_data_path,
+             test_tweet_data_path=args.test_tweet_data_path,
+             window_size=args.window_size,
+             forcast_window=args.forcast_window)
     else:
         print(f"Unknown model: {args.model}")
