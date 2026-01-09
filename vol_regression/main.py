@@ -4,6 +4,7 @@ import numpy as np
 import argparse
 import matplotlib.pyplot as plt
 from advance_input import build_daily_btc_vol, build_daily_tweet_features, build_daily_multimodal_table
+from tqdm import tqdm
 
 def baseline_pred(window_size, forecast_window, predictor, test_data_path = None):
     if test_data_path:
@@ -89,37 +90,97 @@ def baseline(poly_degree=4,
     #     # print(f"发生错误: {e}")
     #     print(f"An error occurred: {e}")
 
+# def advanced_pred(window_size, forecast_window, model, daily_test):
+#     if len(daily_test) < (window_size + forecast_window):
+#         raise ValueError(f"Test data must have at least {window_size + forecast_window} rows.")
+    
+#     recent_window = daily_test.iloc[:window_size]
+#     pred = model.predict(recent_window)
+
+#     true_future = daily_test.iloc[window_size:window_size + forecast_window]["volatility"].to_numpy(dtype=float)
+#     err = pred - true_future
+#     mae = float(np.mean(np.abs(err)))
+#     rmse = float(np.sqrt(np.mean(err ** 2)))
+
+#     print("Advanced Model Prediction Results:")
+#     print("Pred:", pred)
+#     print("True:", true_future)
+#     print(f"MAE={mae:.6f}, RMSE={rmse:.6f}")
+
+#     # plot
+#     x = np.arange(1, forecast_window + 1)
+#     plt.figure()
+#     plt.plot(x, true_future, label = "true", marker='o')
+#     plt.plot(x, pred, label = "pred", marker='x')
+#     plt.xlabel("Days into the future")
+#     plt.ylabel("Volatility")
+#     plt.title("Advanced Poly: Volatility Prediction vs Ground Truth")
+#     plt.legend()
+#     plt.tight_layout()
+#     plt.savefig("./vol_regression/advanced_poly_vol_prediction_vs_true.png")
+#     # plt.show()
+
+#     print("Advanced true days:", daily_test.iloc[window_size:window_size+forecast_window]["Date"].tolist())
+
 def advanced_pred(window_size, forecast_window, model, daily_test):
     if len(daily_test) < (window_size + forecast_window):
         raise ValueError(f"Test data must have at least {window_size + forecast_window} rows.")
     
-    recent_window = daily_test.iloc[:window_size]
-    pred = model.predict(recent_window)
+    maes = []
+    rmses = []
+    predictions_by_date = {}
 
-    true_future = daily_test.iloc[window_size:window_size + forecast_window]["volatility"].to_numpy(dtype=float)
-    err = pred - true_future
-    mae = float(np.mean(np.abs(err)))
-    rmse = float(np.sqrt(np.mean(err ** 2)))
+    num_windows = len(daily_test) - window_size - forecast_window + 1
+    if num_windows <= 0:
+        print("Not enough data for the given window size and forecast window.")
+        return
+    
+    print(f"Evaluating over {num_windows} windows...")
 
-    print("Advanced Model Prediction Results:")
-    print("Pred:", pred)
-    print("True:", true_future)
-    print(f"MAE={mae:.6f}, RMSE={rmse:.6f}")
+    for i in tqdm(range(num_windows), desc="Evaluating Advanced Model"):
+        input_window = daily_test.iloc[i : i + window_size]
+        target_window = daily_test.iloc[i + window_size : i + window_size + forecast_window]
 
-    # plot
-    x = np.arange(1, forecast_window + 1)
-    plt.figure()
-    plt.plot(x, true_future, label = "true", marker='o')
-    plt.plot(x, pred, label = "pred", marker='x')
-    plt.xlabel("Days into the future")
+        pred = model.predict(input_window)
+        
+        true_vol = target_window["volatility"].to_numpy(dtype=float)
+        target_dates = target_window["Date"]
+
+        err = pred - true_vol
+        maes.append(np.mean(np.abs(err)))
+        rmses.append(np.sqrt(np.mean(err ** 2)))
+
+        for j, date in enumerate(target_dates):
+            if date not in predictions_by_date:
+                predictions_by_date[date] = []
+            predictions_by_date[date].append(pred[j])
+
+    averaged_predictions = {date: np.mean(preds) for date, preds in predictions_by_date.items()}
+    
+    pred_series = pd.Series(averaged_predictions).sort_index()
+    
+    true_series = daily_test.set_index("Date")["volatility"].loc[pred_series.index]
+
+    avg_mae = np.mean(maes)
+    avg_rmse = np.mean(rmses)
+    
+    print("\nAdvanced Model Sliding Window Evaluation Results:")
+    print(f"Average MAE across all windows: {avg_mae:.6f}")
+    print(f"Average RMSE across all windows: {avg_rmse:.6f}")
+
+    plt.figure(figsize=(15, 7))
+    plt.plot(true_series.index, true_series.values, label="True Volatility", marker='o', linestyle='-')
+    plt.plot(pred_series.index, pred_series.values, label="Averaged Prediction", marker='x', linestyle='--')
+    
+    plt.xlabel("Date")
     plt.ylabel("Volatility")
-    plt.title("Advanced Poly: Volatility Prediction vs Ground Truth")
+    plt.title("Advanced Model: Averaged Volatility Prediction vs. Ground Truth")
     plt.legend()
+    plt.grid(True)
     plt.tight_layout()
     plt.savefig("./vol_regression/advanced_poly_vol_prediction_vs_true.png")
-    # plt.show()
 
-    print("Advanced true days:", daily_test.iloc[window_size:window_size+forecast_window]["Date"].tolist())
+    print("\nPlot saved to ./vol_regression/advanced_poly_vol_prediction_vs_true.png")
 
 
 def advanced(poly_degree=4, 
@@ -160,14 +221,14 @@ def advanced(poly_degree=4,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Polynomial Volatility Predictor")
-    parser.add_argument("--poly_degree", type=int, default=2, help="Degree of the polynomial")
+    parser.add_argument("--poly_degree", type=int, default=3, help="Degree of the polynomial")
     parser.add_argument("--train_btc_data_path", type=str, default=r"data\btc_train.csv", help="Path to the training data file")
     parser.add_argument("--test_btc_data_path", type=str, default=r"data\btc_test.csv", help="Path to the testing data file")
     parser.add_argument("--train_tweet_data_path", type=str, default=r"data\tweet_train.csv", help="Path to the training tweet data file")
     parser.add_argument("--test_tweet_data_path", type=str, default=r"data\tweet_test.csv", help="Path to the testing tweet data file")
-    parser.add_argument("--model", type = str, default = "baseline", help = "Model to use: baseline or advanced")
-    parser.add_argument("--window_size", type = int, default = 40, help = "Window size for training")
-    parser.add_argument("--forcast_window", type = int, default = 7, help = "Forecast window size")
+    parser.add_argument("--model", type = str, default = "advanced", help = "Model to use: baseline or advanced")
+    parser.add_argument("--window_size", type = int, default = 50, help = "Window size for training")
+    parser.add_argument("--forcast_window", type = int, default = 1, help = "Forecast window size")
 
     args = parser.parse_args()
 

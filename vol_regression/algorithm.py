@@ -2,6 +2,10 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
+from sklearn.decomposition import PCA
+from catboost import CatBoostRegressor
+from sklearn.multioutput import MultiOutputRegressor
+
 
 class PolynomialVolatilityPredictor:
     """
@@ -169,14 +173,119 @@ class PolynomialVolatilityPredictor:
         return self.df[['Date', 'volatility', 'direction']]
 
 
+# class PolynomialMultiModalVolatilityPredictor:
+#     def __init__(self, degree=4, window_size=30, forecast_window=7):
+#         self.degree = int(degree)
+#         self.window_size = int(window_size)
+#         self.forecast_window = int(forecast_window)
+
+#         self.poly = PolynomialFeatures(degree=self.degree, include_bias=False)
+#         self.model = LinearRegression()
+
+#         self.df_daily = None
+#         self._trained = False
+
+#         self.tweet_cols = [
+#             "sentiment_mean_t",
+#             "sentiment_std_t",
+#             "tweet_count_t",
+#             "positive_ratio_t",
+#             "negative_ratio_t",
+#         ]
+
+#         # PCA
+#         self.pca_components = 319 # 超参，可调整
+#         self.pca = PCA(n_components=self.pca_components)
+
+
+#     def load_daily_table(self, df_daily: pd.DataFrame):
+#         required = {"Date", "volatility", *self.tweet_cols}
+#         missing = required - set(df_daily.columns)
+#         if missing:
+#             raise ValueError(f"daily table missing columns: {sorted(missing)}")
+
+#         df = df_daily.copy()
+#         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+#         df = df.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
+
+#         # ensure numeric
+#         df["volatility"] = pd.to_numeric(df["volatility"], errors="coerce")
+#         df = df.dropna(subset=["volatility"])
+#         for c in self.tweet_cols:
+#             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+
+#         self.df_daily = df
+
+#     def _build_xy(self):
+#         W, H = self.window_size, self.forecast_window
+#         vol = self.df_daily["volatility"].to_numpy(float)                 # (T,)
+#         tw  = self.df_daily[self.tweet_cols].to_numpy(float)              # (T,5)
+
+#         T = len(vol)
+#         n = T - W - H + 1
+#         if n <= 0:
+#             raise ValueError(f"Not enough data: need at least W+H={W+H}, got {T}")
+
+#         X = np.zeros((n, W * 6), dtype=float)  # 6 dims/day
+#         Y = np.zeros((n, H), dtype=float)
+
+#         for i in range(n):
+#             vol_win = vol[i:i+W].reshape(W, 1)      # (W,1)
+#             tw_win  = tw[i:i+W]                     # (W,5)
+#             day_win = np.concatenate([vol_win, tw_win], axis=1)  # (W,6)
+#             X[i] = day_win.reshape(-1)
+#             Y[i] = vol[i+W:i+W+H]
+
+#         return X, Y
+
+#     def train(self):
+#         X, Y = self._build_xy()
+#         Xp = self.poly.fit_transform(X)
+#         # PCA 
+#         Xp = self.pca.fit_transform(Xp)
+#         self.model.fit(Xp, Y) # multi-output
+#         self._trained = True
+
+#     def predict(self, recent_daily_window: pd.DataFrame) -> np.ndarray:
+#         if not self._trained:
+#             raise ValueError("Model not trained. Call train() first.")
+#         if len(recent_daily_window) != self.window_size:
+#             raise ValueError(f"Expected window length {self.window_size}, got {len(recent_daily_window)}")
+
+#         cols = ["volatility"] + self.tweet_cols
+#         missing = set(cols) - set(recent_daily_window.columns)
+#         if missing:
+#             raise ValueError(f"predict window missing columns: {sorted(missing)}")
+
+#         x = recent_daily_window[cols].to_numpy(float).reshape(1, -1)  # (1, W*6)
+#         xp = self.poly.transform(x)
+#         #PCA
+#         xp = self.pca.transform(xp)
+#         y = self.model.predict(xp)  # (1, H)
+#         return y.reshape(-1)
+
+
+# catboost 
 class PolynomialMultiModalVolatilityPredictor:
     def __init__(self, degree=4, window_size=30, forecast_window=7):
         self.degree = int(degree)
         self.window_size = int(window_size)
         self.forecast_window = int(forecast_window)
 
-        self.poly = PolynomialFeatures(degree=self.degree, include_bias=False)
-        self.model = LinearRegression()
+        catboost_params = {
+            'iterations': 2000,
+            'learning_rate': 0.08,
+            'depth': 6,
+            'verbose': 0,  # 训练时不打印日志
+            'l2_leaf_reg': 1,
+            'bootstrap_type': 'Bernoulli',
+            'subsample': 0.8,
+            'loss_function': 'MultiRMSE',   # 使用CatBoost原生的多目标损失函数
+            'eval_metric': 'MultiRMSE',
+            'early_stopping_rounds': 50     # 如果验证集性能50轮内无提升，则停止训练
+        }
+        self.model = MultiOutputRegressor(CatBoostRegressor(**catboost_params))
+
 
         self.df_daily = None
         self._trained = False
@@ -188,6 +297,11 @@ class PolynomialMultiModalVolatilityPredictor:
             "positive_ratio_t",
             "negative_ratio_t",
         ]
+
+        # PCA
+        self.pca_components = 319 # 超参，可调整
+        self.pca = PCA(n_components=self.pca_components)
+
 
     def load_daily_table(self, df_daily: pd.DataFrame):
         required = {"Date", "volatility", *self.tweet_cols}
@@ -231,8 +345,11 @@ class PolynomialMultiModalVolatilityPredictor:
 
     def train(self):
         X, Y = self._build_xy()
-        Xp = self.poly.fit_transform(X)
-        self.model.fit(Xp, Y)     # multi-output
+        # Xp = self.poly.fit_transform(X)
+        # # PCA 
+        # Xp = self.pca.fit_transform(Xp)
+        # self.model.fit(Xp, Y) # multi-output
+        self.model.fit(X, Y)
         self._trained = True
 
     def predict(self, recent_daily_window: pd.DataFrame) -> np.ndarray:
@@ -247,6 +364,9 @@ class PolynomialMultiModalVolatilityPredictor:
             raise ValueError(f"predict window missing columns: {sorted(missing)}")
 
         x = recent_daily_window[cols].to_numpy(float).reshape(1, -1)  # (1, W*6)
-        xp = self.poly.transform(x)
-        y = self.model.predict(xp)  # (1, H)
+        # xp = self.poly.transform(x)
+        # #PCA
+        # xp = self.pca.transform(xp)
+        y = self.model.predict(x)  # (1, H)
         return y.reshape(-1)
+
