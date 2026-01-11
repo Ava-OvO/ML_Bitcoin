@@ -6,51 +6,147 @@ import matplotlib.pyplot as plt
 from advance_input import build_daily_btc_vol, build_daily_tweet_features, build_daily_multimodal_table
 from tqdm import tqdm
 
-def baseline_pred(window_size, forecast_window, predictor, test_data_path = None):
-    if test_data_path:
-        test_df = pd.read_csv(test_data_path)
-        if "Date" in test_df.columns:
-            test_df['Date'] = pd.to_datetime(test_df['Date'])
-            test_df = test_df.sort_values("Date").reset_index(drop=True)
+# def baseline_pred(window_size, forecast_window, predictor, test_data_path = None):
+#     if test_data_path:
+#         test_df = pd.read_csv(test_data_path)
+#         if "Date" in test_df.columns:
+#             test_df['Date'] = pd.to_datetime(test_df['Date'])
+#             test_df = test_df.sort_values("Date").reset_index(drop=True)
+#         else:
+#             test_df = test_df.reset_index(drop=True)
+
+#         needed_cols = {"High", "Low", "Close"}
+#         if not needed_cols.issubset(set(test_df.columns)):
+#             raise ValueError(f"Test data must contain columns: {needed_cols}")
+        
+#         if len(test_df) < (window_size + forecast_window):
+#             raise ValueError(f"Test data must have at least {window_size + forecast_window} rows.")
+        
+#         future_true_window = test_df.iloc[window_size:window_size + forecast_window][["High", "Low", "Close"]]
+#         true_vol = (future_true_window["High"] - future_true_window["Low"]) / future_true_window["Close"]
+#         true_vol = true_vol.to_numpy(dtype=float)
+
+#         Input = test_df.iloc[0:window_size][["High", "Low", "Close"]]
+#         future_pred = predictor.predict(Input)
+        
+#         err = future_pred - true_vol
+#         mae = float(np.mean(np.abs(err)))
+#         rmse = float(np.sqrt(np.mean(err ** 2)))
+
+#         print("Baseline Model Prediction Results:")
+#         print("Pred:", future_pred)
+#         print("True:", true_vol)
+#         print(f"\nMAE={mae:.6f}, RMSE={rmse:.6f}")
+
+#         x = np.arange(1, forecast_window + 1)
+#         plt.figure()
+#         plt.plot(x, true_vol, label = "true")
+#         plt.plot(x, future_pred, label = "pred")
+#         plt.xlabel("Days into the future")
+#         plt.ylabel("Volatility")
+#         plt.title("Volatility Prediction vs True Values")
+#         plt.legend()
+#         plt.tight_layout()
+#         plt.savefig("./vol_regression/baseline_volatility_prediction_vs_true.png")
+#         # plt.show()
+
+#         print("Baseline true days:", test_df.iloc[window_size:window_size+forecast_window]["Date"].tolist())
+
+def baseline_pred(window_size, forecast_window, predictor, test_data_path=None):
+    if not test_data_path:
+        raise ValueError("test_data_path must be provided for baseline_pred.")
+
+    test_df = pd.read_csv(test_data_path)
+
+    # sort by date if possible
+    if "Date" in test_df.columns:
+        test_df["Date"] = pd.to_datetime(test_df["Date"])
+        test_df = test_df.sort_values("Date").reset_index(drop=True)
+        has_date = True
+    else:
+        test_df = test_df.reset_index(drop=True)
+        has_date = False
+
+    needed_cols = {"High", "Low", "Close"}
+    if not needed_cols.issubset(set(test_df.columns)):
+        raise ValueError(f"Test data must contain columns: {needed_cols}")
+
+    if len(test_df) < (window_size + forecast_window):
+        raise ValueError(f"Test data must have at least {window_size + forecast_window} rows.")
+
+    maes = []
+    rmses = []
+    predictions_by_key = {}  # date -> [preds] (or index key if no Date)
+
+    num_windows = len(test_df) - window_size - forecast_window + 1
+    if num_windows <= 0:
+        print("Not enough data for the given window size and forecast window.")
+        return
+
+    print(f"Evaluating Baseline Model over {num_windows} windows...")
+
+    for i in tqdm(range(num_windows), desc="Evaluating Baseline Model"):
+        input_window = test_df.iloc[i : i + window_size][["High", "Low", "Close"]]
+        target_window = test_df.iloc[i + window_size : i + window_size + forecast_window][["High", "Low", "Close"]]
+
+        # true volatility for the forecast window
+        true_vol = ((target_window["High"] - target_window["Low"]) / target_window["Close"]).to_numpy(dtype=float)
+
+        # model prediction
+        pred = predictor.predict(input_window)
+
+        err = pred - true_vol
+        maes.append(float(np.mean(np.abs(err))))
+        rmses.append(float(np.sqrt(np.mean(err ** 2))))
+
+        # collect predictions for averaging (by Date if exists, else by absolute index)
+        if has_date:
+            target_keys = test_df.iloc[i + window_size : i + window_size + forecast_window]["Date"].tolist()
         else:
-            test_df = test_df.reset_index(drop=True)
+            # unique key per target point
+            target_keys = list(range(i + window_size, i + window_size + forecast_window))
 
-        needed_cols = {"High", "Low", "Close"}
-        if not needed_cols.issubset(set(test_df.columns)):
-            raise ValueError(f"Test data must contain columns: {needed_cols}")
-        
-        if len(test_df) < (window_size + forecast_window):
-            raise ValueError(f"Test data must have at least {window_size + forecast_window} rows.")
-        
-        future_true_window = test_df.iloc[window_size:window_size + forecast_window][["High", "Low", "Close"]]
-        true_vol = (future_true_window["High"] - future_true_window["Low"]) / future_true_window["Close"]
-        true_vol = true_vol.to_numpy(dtype=float)
+        for j, k in enumerate(target_keys):
+            predictions_by_key.setdefault(k, []).append(float(pred[j]))
 
-        Input = test_df.iloc[0:window_size][["High", "Low", "Close"]]
-        future_pred = predictor.predict(Input)
-        
-        err = future_pred - true_vol
-        mae = float(np.mean(np.abs(err)))
-        rmse = float(np.sqrt(np.mean(err ** 2)))
+    # averaged predictions
+    averaged_predictions = {k: float(np.mean(v)) for k, v in predictions_by_key.items()}
 
-        print("Baseline Model Prediction Results:")
-        print("Pred:", future_pred)
-        print("True:", true_vol)
-        print(f"\nMAE={mae:.6f}, RMSE={rmse:.6f}")
+    # build aligned pred/true series for plotting
+    if has_date:
+        pred_series = pd.Series(averaged_predictions).sort_index()
+        # true series: compute daily vol for all rows, then pick pred dates
+        full_true_vol = ((test_df["High"] - test_df["Low"]) / test_df["Close"]).to_numpy(dtype=float)
+        true_series = pd.Series(full_true_vol, index=test_df["Date"]).loc[pred_series.index]
+        x_axis = pred_series.index
+        x_label = "Date"
+    else:
+        pred_series = pd.Series(averaged_predictions).sort_index()
+        full_true_vol = ((test_df["High"] - test_df["Low"]) / test_df["Close"]).to_numpy(dtype=float)
+        true_series = pd.Series(full_true_vol, index=np.arange(len(test_df))).loc[pred_series.index]
+        x_axis = pred_series.index
+        x_label = "Index"
 
-        x = np.arange(1, forecast_window + 1)
-        plt.figure()
-        plt.plot(x, true_vol, label = "true")
-        plt.plot(x, future_pred, label = "pred")
-        plt.xlabel("Days into the future")
-        plt.ylabel("Volatility")
-        plt.title("Volatility Prediction vs True Values")
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig("./vol_regression/baseline_volatility_prediction_vs_true.png")
-        # plt.show()
+    avg_mae = float(np.mean(maes))
+    avg_rmse = float(np.mean(rmses))
 
-        print("Baseline true days:", test_df.iloc[window_size:window_size+forecast_window]["Date"].tolist())
+    print("\nBaseline Model Sliding Window Evaluation Results:")
+    print(f"Average MAE across all windows: {avg_mae:.6f}")
+    print(f"Average RMSE across all windows: {avg_rmse:.6f}")
+
+    # plot
+    plt.figure(figsize=(15, 7))
+    plt.plot(x_axis, true_series.values, label="True Volatility", marker="o", linestyle="-")
+    plt.plot(x_axis, pred_series.values, label="Averaged Prediction", marker="x", linestyle="--")
+    plt.xlabel(x_label)
+    plt.ylabel("Volatility")
+    plt.title("Baseline Model: Averaged Volatility Prediction vs. Ground Truth")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig("./vol_regression/baseline_volatility_prediction_vs_true.png")
+
+    print("\nPlot saved to ./vol_regression/baseline_volatility_prediction_vs_true.png")
 
 
 

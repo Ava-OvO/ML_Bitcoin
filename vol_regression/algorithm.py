@@ -272,17 +272,25 @@ class PolynomialMultiModalVolatilityPredictor:
         self.window_size = int(window_size)
         self.forecast_window = int(forecast_window)
 
+        # catboost_params = {
+        #     'iterations': 300,
+        #     'learning_rate': 0.1,
+        #     'depth': 6,
+        #     'verbose': 0,  # 训练时不打印日志
+        #     'l2_leaf_reg': 1,
+        #     'bootstrap_type': 'Bernoulli',
+        #     'subsample': 0.8,
+        #     'loss_function': 'MultiRMSE',   # 使用CatBoost原生的多目标损失函数
+        #     'eval_metric': 'MultiRMSE',
+        #     'early_stopping_rounds': 50     # 如果验证集性能50轮内无提升，则停止训练
+        # }
+
         catboost_params = {
-            'iterations': 2000,
-            'learning_rate': 0.08,
+            'iterations': 200,
+            'learning_rate': 0.1,
             'depth': 6,
-            'verbose': 0,  # 训练时不打印日志
-            'l2_leaf_reg': 1,
-            'bootstrap_type': 'Bernoulli',
-            'subsample': 0.8,
-            'loss_function': 'MultiRMSE',   # 使用CatBoost原生的多目标损失函数
-            'eval_metric': 'MultiRMSE',
-            'early_stopping_rounds': 50     # 如果验证集性能50轮内无提升，则停止训练
+            'loss_function': 'RMSE',
+            'verbose': False
         }
         self.model = MultiOutputRegressor(CatBoostRegressor(**catboost_params))
 
